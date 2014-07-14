@@ -62,7 +62,6 @@ from textgrid import MLF  # http://github.com/kylebgorman/textgrid.py/
 
 DEBUG = False  # when True, temp data not deleted...
 
-
 ### GLOBAL VARS
 # You can change these if you know HTK well
 
@@ -128,6 +127,8 @@ Option              Function
 -s samplerate (Hz)  Samplerate for models           [default: 8000]
                     (NB: available only with -t)
 -t training_data/   Perform model training
+-p                  Do not insert small pauses
+-i                  Do not insert silence
 """
 
 
@@ -207,7 +208,8 @@ class Aligner(object):
     """
 
     def __init__(self, ts_dir, tr_dir, dictionary='dictionary.txt',
-                 sr=8000, ood_mode=False, phoneset=None):
+                 sr=8000, ood_mode=False, phoneset=None, no_sil_mode=False,
+                 no_sp_mode=False):
         ## class variables
         self.sr = sr
         self.has_sox = self._has_sox()
@@ -244,6 +246,8 @@ class Aligner(object):
         self.phon_mlf = os.path.join(self.tmp_dir, 'phones.mlf')
         # other options
         self.ood_mode = ood_mode
+        self.no_sp_mode = no_sp_mode
+        self.no_sil_mode = no_sil_mode
         # initializing
         self._subclass_specific_init(ts_dir, tr_dir)
 
@@ -329,7 +333,8 @@ class Aligner(object):
                 # .mlf headers
                 print >> word_mlf, '"{0}"'.format(word_lab.name)
                 # sil
-                print >> phon_lab, SIL
+                if not self.no_sil_mode:
+                    print >> phon_lab, SIL
                 # look up words
                 for word in open(lab, 'r').readline().rstrip().split():
                     if word in self.the_dict:
@@ -340,7 +345,8 @@ class Aligner(object):
                         print >> word_mlf, word
                     else:
                         ood[word].append(lab)
-                print >> phon_lab, SIL
+                if not self.no_sil_mode:
+                    print >> phon_lab, SIL
                 print >> word_mlf, '.'
                 phon_lab.close()
                 word_lab.close()
@@ -359,17 +365,22 @@ class Aligner(object):
         print >> open(self.words, 'w'), '\n'.join(found_words)
         ded = os.path.join(self.tmp_dir, TEMP)
         # make ded
-        print >> open(ded, 'w'), """AS {0}\nMP {1} {1} {0}""".format(SP,
-                                                                     SIL)
+        if not self.no_sp_mode:
+            print >> open(ded, 'w'), """AS {0}\nMP {1} {1} {0}""".format(SP,
+                                                                         SIL)
         check_call(['HDMan', '-m', '-g', ded, '-w', self.words, '-n',
                     self.phons, self.taskdict, self.dictionary])
-        # add sil
-        print >> open(self.phons, 'a'), SIL
-        ## add sil and projected words to self.taskdict
-        print >> open(self.taskdict, 'a'), '{0} {0}'.format(SIL)
+        if not self.no_sil_mode:
+            # add sil
+            print >> open(self.phons, 'a'), SIL
+            ## add sil and projected words to self.taskdict
+            print >> open(self.taskdict, 'a'), '{0} {0}'.format(SIL)
         ## run HLEd
         led = os.path.join(self.tmp_dir, TEMP)
-        print >> open(led, 'w'), 'EX\nIS {0} {0}\nDE {1}'.format(SIL, SP)
+        if self.no_sp_mode:
+            print >> open(led, 'w'), 'EX\nIS {0} {0}'.format(SIL)
+        else:
+            print >> open(led, 'w'), 'EX\nIS {0} {0}\nDE {1}'.format(SIL, SP)
         check_call(['HLEd', '-l', self.lab_dir, '-d', self.taskdict,
                             '-i', self.phon_mlf, led, self.word_mlf])
 
@@ -448,13 +459,15 @@ NUMCEPS = 12"""
         """
         Align using the models in self.cur_dir and MLF to path
         """
-        check_call(['HVite', '-a', '-m', '-y', 'lab', '-o', 'SM', '-b',
-                    SIL, '-i', mlf, '-L', self.lab_dir,
-                    '-C', self.cfg, '-S', self.test_scp,
-                    '-H', os.path.join(self.cur_dir, MACROS),
-                    '-H', os.path.join(self.cur_dir, HMMDEFS),
-                    '-I', self.word_mlf, '-t'] + PRUNING +
-                   ['-s', SFAC, self.taskdict, self.phons])
+        call_list = (['HVite', '-a', '-m', '-y', 'lab', '-o', 'SM'] +
+                     (['-b', SIL] if not self.no_sil_mode else []) +
+                     ['-i', mlf, '-L', self.lab_dir,
+                      '-C', self.cfg, '-S', self.test_scp,
+                      '-H', os.path.join(self.cur_dir, MACROS),
+                      '-H', os.path.join(self.cur_dir, HMMDEFS),
+                      '-I', self.word_mlf, '-t'] + PRUNING +
+                     ['-s', SFAC, self.taskdict, self.phons])
+        check_call(call_list)
 
     def align_and_score(self, mlf, score):
         """
@@ -462,14 +475,16 @@ NUMCEPS = 12"""
         """
         i = 0
         sink = open(score, 'w')
-        call_list = ['HVite', '-T', '1', '-a', '-m', '-y', 'lab',
-                     '-o', 'SM', '-b', SIL, '-i', mlf,
-                     '-L', self.lab_dir,
-                     '-C', self.cfg, '-S', self.test_scp,
-                     '-H', os.path.join(self.cur_dir, MACROS),
-                     '-H', os.path.join(self.cur_dir, HMMDEFS),
-                     '-I', self.word_mlf, '-t'] + PRUNING + \
-                    [self.taskdict, self.phons]
+        call_list = (['HVite', '-T', '1', '-a', '-m', '-y', 'lab',
+                      '-o', 'SM'] +
+                     (['-b', SIL] if not self.no_sil_mode else []) +
+                     ['-i', mlf,
+                      '-L', self.lab_dir,
+                      '-C', self.cfg, '-S', self.test_scp,
+                      '-H', os.path.join(self.cur_dir, MACROS),
+                      '-H', os.path.join(self.cur_dir, HMMDEFS),
+                      '-I', self.word_mlf, '-t'] + PRUNING +
+                     [self.taskdict, self.phons])
         proc = Popen(call_list, stdout=PIPE)
         for line in proc.stdout:
             mch = HVITE_SCORE.match(line)  # check for score line
@@ -675,12 +690,14 @@ if __name__ == '__main__':
     ## parse arguments
     # complain if no test directory specification
     try:
-        (opts, args) = getopt(argv[1:], 'd:n:s:t:aAmh')
+        (opts, args) = getopt(argv[1:], 'd:n:s:t:aAmhpi')
         # default opts values
         dictionary = 'dictionary.txt'  # -d
         sr = 8000
         tr_dir = None
         ood_mode = False
+        no_sp_mode = False
+        no_sil_mode = False
         n_per_round = 4  # -n
         speaker_dependent = False  # -T
         require_training = False  # to keep track of if -n, -s used
@@ -693,6 +710,10 @@ if __name__ == '__main__':
                     error('-d path {0} not found'.format(dictionary))
             elif opt == '-m':  # ood_mode
                 ood_mode = True
+            elif opt == '-p':  # no_sp_mode
+                no_sp_mode = True
+            elif opt == '-i':  # no_sil_mode
+                no_sil_mode = True
             elif opt == '-n':
                 try:
                     n_per_round = int(val)
@@ -784,7 +805,7 @@ if __name__ == '__main__':
         try:
             print >> stderr, 'Initializing...',
             aligner = Aligner(ts_dir, 'MOD', dictionary, sr, ood_mode,
-                              CMU_PHONES)
+                              CMU_PHONES, no_sil_mode, no_sp_mode)
             print >> stderr, 'done.'
             print >> stderr, 'Aligning...',
             aligner.align_and_score(path_to_mlf, os.path.join(ts_dir,
